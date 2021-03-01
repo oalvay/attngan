@@ -1,3 +1,7 @@
+*.ipynb
+*.pickle
+*.pth
+
 backup
 output
 code/*.pyc
