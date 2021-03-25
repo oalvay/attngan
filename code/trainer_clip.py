@@ -26,8 +26,6 @@ import sys
 
 import clip
 
-import shutil
-
 # ################# Text to image task############################ #
 class condGANTrainer(object):
     def __init__(self, output_dir, data_loader, n_words, ixtoword):
@@ -78,31 +76,19 @@ class condGANTrainer(object):
 
         # #######################generator and discriminators############## #
         netsD = []
-        if cfg.GAN.B_DCGAN:
-            if cfg.TREE.BRANCH_NUM ==1:
-                from model import D_NET64 as D_NET
-            elif cfg.TREE.BRANCH_NUM == 2:
-                from model import D_NET128 as D_NET
-            else:  # cfg.TREE.BRANCH_NUM == 3:
-                from model import D_NET256 as D_NET
-            # TODO: elif cfg.TREE.BRANCH_NUM > 3:
-            netG = G_DCGAN()
-            netsD = [D_NET(b_jcu=False)]
-        else:
-            from model import D_NET64, D_NET128, D_NET256
-            netG = G_NET()
-            if cfg.TREE.BRANCH_NUM > 0:
-                netsD.append(D_NET64())
-            if cfg.TREE.BRANCH_NUM > 1:
-                netsD.append(D_NET128())
-            if cfg.TREE.BRANCH_NUM > 2:
-                netsD.append(D_NET256())
-            # TODO: if cfg.TREE.BRANCH_NUM > 3:
+        netsD.append(clip.load('ViT-B/32', jit=False)[0])
+        
+        # if cfg.TREE.BRANCH_NUM > 0:
+        #     netsD.append(clip.load('ViT-B/32', jit=False))
+        # if cfg.TREE.BRANCH_NUM > 1:
+        #     netsD.append(clip.load('ViT-B/32', jit=False))
+        # if cfg.TREE.BRANCH_NUM > 2:
+        #     netsD.append(clip.load('ViT-B/32', jit=False))
+
+        netG = G_NET()
+
         netG.apply(weights_init)
-        # print(netG)
-        for i in range(len(netsD)):
-            netsD[i].apply(weights_init)
-            # print(netsD[i])
+
         print('# of netsD', len(netsD))
         #
         epoch = 0
@@ -115,28 +101,19 @@ class condGANTrainer(object):
             iend = cfg.TRAIN.NET_G.rfind('.')
             epoch = cfg.TRAIN.NET_G[istart:iend]
             epoch = int(epoch) + 1
-            if cfg.TRAIN.B_NET_D:
-                Gname = cfg.TRAIN.NET_G
-                for i in range(len(netsD)):
-                    s_tmp = Gname[:Gname.rfind('/')]
-                    Dname = '%s/netD%d.pth' % (s_tmp, i)
-                    print('Load D from: ', Dname)
-                    state_dict = \
-                        torch.load(Dname, map_location=lambda storage, loc: storage)
-                    netsD[i].load_state_dict(state_dict)
+
         # ########################################################### #
         if cfg.CUDA:
             text_encoder = text_encoder.cuda()
             image_encoder = image_encoder.cuda()
             netG.cuda()
-            for i in range(len(netsD)):
-                netsD[i].cuda()
         return [text_encoder, image_encoder, netG, netsD, epoch]
 
     def define_optimizers(self, netG, netsD):
         optimizersD = []
         num_Ds = len(netsD)
         for i in range(num_Ds):
+            # [param for name, param in netsD[i].named_parameters() if 'custom_' in name]
             opt = optim.Adam(netsD[i].parameters(),
                              lr=cfg.TRAIN.DISCRIMINATOR_LR,
                              betas=(0.5, 0.999))
@@ -166,12 +143,8 @@ class condGANTrainer(object):
         torch.save(netG.state_dict(),
             '%s/netG_epoch_%d.pth' % (self.model_dir, epoch))
         load_params(netG, backup_para)
-        #
-        for i in range(len(netsD)):
-            netD = netsD[i]
-            torch.save(netD.state_dict(),
-                '%s/netD%d.pth' % (self.model_dir, i))
-        print('Save G/Ds models.')
+
+        print('Save G model.')
 
     def set_requires_grad_value(self, models_list, brequires):
         for i in range(len(models_list)):
@@ -272,7 +245,7 @@ class condGANTrainer(object):
                 D_logs = ''
                 for i in range(len(netsD)):
                     netsD[i].zero_grad()
-                    errD = discriminator_loss(netsD[i], imgs[i], fake_imgs[i],
+                    errD = discriminator_loss(netsD[i], imgs[-1], fake_imgs[-1],
                                               sent_emb, real_labels, fake_labels, texts)
                     # backward and update parameters
                     errD.backward()
@@ -292,7 +265,8 @@ class condGANTrainer(object):
                 netG.zero_grad()
                 errG_total, G_logs = \
                     generator_loss(netsD, image_encoder, fake_imgs, real_labels,
-                                   words_embs, sent_emb, match_labels, cap_lens, class_ids, texts)
+                                   words_embs, sent_emb, match_labels, cap_lens, class_ids,
+                                   texts, imgs)
                 kl_loss = KL_loss(mu, logvar)
                 errG_total += kl_loss
                 G_logs += 'kl_loss: %.2f ' % kl_loss.item()
@@ -300,8 +274,7 @@ class condGANTrainer(object):
                 errG_total.backward()
                 optimizerG.step()
                 for p, avg_p in zip(netG.parameters(), avg_param_G):
-                    # avg_p.mul_(0.999).add_(0.001, p.data)
-                    avg_p.mul_(0.999).add_(p.data, alpha = 0.001)
+                    avg_p.mul_(0.999).add_(0.001, p.data)
 
                 if gen_iterations % 100 == 0:
                     print(D_logs + '\n' + G_logs)
@@ -402,7 +375,7 @@ class condGANTrainer(object):
                     # if step > 50:
                     #     break
 
-                    imgs, captions, cap_lens, class_ids, keys, texts = prepare_data(data)
+                    imgs, captions, cap_lens, class_ids, keys = prepare_data(data)
 
                     hidden = text_encoder.init_hidden(batch_size)
                     # words_embs: batch_size x nef x seq_len
@@ -420,15 +393,11 @@ class condGANTrainer(object):
                     noise.data.normal_(0, 1)
                     fake_imgs, _, _, _ = netG(noise, sent_emb, words_embs, mask)
                     for j in range(batch_size):
-                        s_tmp = '%s/fake/%s' % (save_dir, keys[j])
+                        s_tmp = '%s/single/%s' % (save_dir, keys[j])
                         folder = s_tmp[:s_tmp.rfind('/')]
                         if not os.path.isdir(folder):
                             print('Make a new folder: ', folder)
                             mkdir_p(folder)
-                            print('Make a new folder: ', f'{save_dir}/real')
-                            mkdir_p(f'{save_dir}/real')
-                            print('Make a new folder: ', f'{save_dir}/text')
-                            mkdir_p(f'{save_dir}/text')
                         k = -1
                         # for k in range(len(fake_imgs)):
                         im = fake_imgs[k][j].data.cpu().numpy()
@@ -439,8 +408,7 @@ class condGANTrainer(object):
                         im = Image.fromarray(im)
                         fullpath = '%s_s%d.png' % (s_tmp, k)
                         im.save(fullpath)
-                        shutil.copy(f"../data/Face/images/{keys[j]}.jpg", f"{save_dir}/real/")
-                        shutil.copy(f"../data/Face/text/{keys[j]}.txt", f"{save_dir}/text/")
+
     def gen_example(self, data_dic):
         if cfg.TRAIN.NET_G == '':
             print('Error: the path for morels is not found!')

@@ -24,9 +24,8 @@ if sys.version_info[0] == 2:
 else:
     import pickle
 
-
 def prepare_data(data):
-    imgs, captions, captions_lens, class_ids, keys = data
+    imgs, captions, captions_lens, class_ids, keys, texts = data
 
     # sort data by the length in a decreasing order
     sorted_cap_lens, sorted_cap_indices = \
@@ -40,6 +39,7 @@ def prepare_data(data):
         else:
             real_imgs.append(Variable(imgs[i]))
 
+    texts = [text for indice, text in sorted(zip(sorted_cap_indices, texts))]
     captions = captions[sorted_cap_indices].squeeze()
     class_ids = class_ids[sorted_cap_indices].numpy()
     # sent_indices = sent_indices[sorted_cap_indices]
@@ -53,7 +53,7 @@ def prepare_data(data):
         sorted_cap_lens = Variable(sorted_cap_lens)
 
     return [real_imgs, captions, sorted_cap_lens,
-            class_ids, keys]
+            class_ids, keys, texts]
 
 
 def get_imgs(img_path, imsize, bbox=None,
@@ -80,7 +80,10 @@ def get_imgs(img_path, imsize, bbox=None,
         for i in range(cfg.TREE.BRANCH_NUM):
             # print(imsize[i])
             if i < (cfg.TREE.BRANCH_NUM - 1):
-                re_img = transforms.Resize(imsize[i])(img)
+                if cfg.CLIP:
+                    re_img = transforms.Resize(imsize[i], interpolation = Image.BICUBIC)(img)
+                else:
+                    re_img = transforms.Resize(imsize[i])(img)
             else:
                 re_img = img
             ret.append(normalize(re_img))
@@ -95,7 +98,8 @@ class TextDataset(data.Dataset):
         self.transform = transform
         self.norm = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+            transforms.Normalize((0.5, 0.5, 0.5),
+                                 (0.5, 0.5, 0.5))])
         self.target_transform = target_transform
         self.embeddings_num = cfg.TEXT.CAPTIONS_PER_IMAGE
 
@@ -113,7 +117,7 @@ class TextDataset(data.Dataset):
         split_dir = os.path.join(data_dir, split)
 
         self.filenames, self.captions, self.ixtoword, \
-            self.wordtoix, self.n_words = self.load_text_data(data_dir, split)
+            self.wordtoix, self.n_words, self.texts = self.load_text_data(data_dir, split)
 
         self.class_id = self.load_class_id(split_dir, len(self.filenames))
         self.number_example = len(self.filenames)
@@ -144,15 +148,17 @@ class TextDataset(data.Dataset):
 
     def load_captions(self, data_dir, filenames):
         all_captions = []
+        all_texts = []
         for i in range(len(filenames)):
             cap_path = '%s/text/%s.txt' % (data_dir, filenames[i])
             with open(cap_path, "r") as f:
-                captions = f.read().split('\n')
+                captions = f.read().split('\n')#.decode('utf8')
                 cnt = 0
                 for cap in captions:
                     if len(cap) == 0:
                         continue
                     cap = cap.replace("\ufffd\ufffd", " ")
+                    all_texts.append(cap)
                     # picks out sequences of alphanumeric characters as tokens
                     # and drops everything else
                     tokenizer = RegexpTokenizer(r'\w+')
@@ -174,7 +180,7 @@ class TextDataset(data.Dataset):
                 if cnt < self.embeddings_num:
                     print('ERROR: the captions for %s less than %d'
                           % (filenames[i], cnt))
-        return all_captions
+        return all_captions, all_texts
 
     def build_dictionary(self, train_captions, test_captions):
         word_counts = defaultdict(float)
@@ -221,32 +227,35 @@ class TextDataset(data.Dataset):
         train_names = self.load_filenames(data_dir, 'train')
         test_names = self.load_filenames(data_dir, 'test')
         if not os.path.isfile(filepath):
-            train_captions = self.load_captions(data_dir, train_names)
-            test_captions = self.load_captions(data_dir, test_names)
+            train_captions, train_texts = self.load_captions(data_dir, train_names)
+            test_captions, test_texts = self.load_captions(data_dir, test_names)
 
             train_captions, test_captions, ixtoword, wordtoix, n_words = \
                 self.build_dictionary(train_captions, test_captions)
             with open(filepath, 'wb') as f:
                 pickle.dump([train_captions, test_captions,
-                             ixtoword, wordtoix], f, protocol=2)
+                             ixtoword, wordtoix, train_texts, test_texts], f, protocol=2)
                 print('Save to: ', filepath)
         else:
             with open(filepath, 'rb') as f:
                 x = pickle.load(f)
                 train_captions, test_captions = x[0], x[1]
                 ixtoword, wordtoix = x[2], x[3]
+                train_texts, test_texts = x[4], x[5]
                 del x
                 n_words = len(ixtoword)
                 print('Load from: ', filepath)
         if split == 'train':
             # a list of list: each list contains
             # the indices of words in a sentence
+            texts = train_texts
             captions = train_captions
             filenames = train_names
         else:  # split=='test'
+            texts = test_texts
             captions = test_captions
             filenames = test_names
-        return filenames, captions, ixtoword, wordtoix, n_words
+        return filenames, captions, ixtoword, wordtoix, n_words, texts
 
     def load_class_id(self, data_dir, total_num):
         if os.path.isfile(data_dir + '/class_info.pickle'):
@@ -290,6 +299,7 @@ class TextDataset(data.Dataset):
         #
         key = self.filenames[index]
         cls_id = self.class_id[index]
+        text = self.texts[index]
         #
         if self.bbox is not None:
             bbox = self.bbox[key]
@@ -305,7 +315,7 @@ class TextDataset(data.Dataset):
         sent_ix = random.randint(0, self.embeddings_num)
         new_sent_ix = index * self.embeddings_num + sent_ix
         caps, cap_len = self.get_caption(new_sent_ix)
-        return imgs, caps, cap_len, cls_id, key
+        return imgs, caps, cap_len, cls_id, key, text
 
 
     def __len__(self):

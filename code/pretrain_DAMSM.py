@@ -61,8 +61,7 @@ def train(dataloader, cnn_model, rnn_model, batch_size,
         rnn_model.zero_grad()
         cnn_model.zero_grad()
 
-        imgs, captions, cap_lens, \
-            class_ids, keys = prepare_data(data)
+        imgs, captions, cap_lens, class_ids, keys, texts = prepare_data(data)
 
 
         # words_features: batch_size x nef x 17 x 17
@@ -100,11 +99,11 @@ def train(dataloader, cnn_model, rnn_model, batch_size,
         if step % UPDATE_INTERVAL == 0:
             count = epoch * len(dataloader) + step
 
-            s_cur_loss0 = s_total_loss0[0] / UPDATE_INTERVAL
-            s_cur_loss1 = s_total_loss1[0] / UPDATE_INTERVAL
+            s_cur_loss0 = s_total_loss0.item() / UPDATE_INTERVAL
+            s_cur_loss1 = s_total_loss1.item() / UPDATE_INTERVAL
 
-            w_cur_loss0 = w_total_loss0[0] / UPDATE_INTERVAL
-            w_cur_loss1 = w_total_loss1[0] / UPDATE_INTERVAL
+            w_cur_loss0 = w_total_loss0.item() / UPDATE_INTERVAL
+            w_cur_loss1 = w_total_loss1.item() / UPDATE_INTERVAL
 
             elapsed = time.time() - start_time
             print('| epoch {:3d} | {:5d}/{:5d} batches | ms/batch {:5.2f} | '
@@ -137,7 +136,7 @@ def evaluate(dataloader, cnn_model, rnn_model, batch_size):
     w_total_loss = 0
     for step, data in enumerate(dataloader, 0):
         real_imgs, captions, cap_lens, \
-                class_ids, keys = prepare_data(data)
+                class_ids, keys, texts = prepare_data(data)
 
         words_features, sent_code = cnn_model(real_imgs[-1])
         # nef = words_features.size(1)
@@ -157,8 +156,8 @@ def evaluate(dataloader, cnn_model, rnn_model, batch_size):
         if step == 50:
             break
 
-    s_cur_loss = s_total_loss[0] / step
-    w_cur_loss = w_total_loss[0] / step
+    s_cur_loss = s_total_loss.item() / step
+    w_cur_loss = w_total_loss.item() / step
 
     return s_cur_loss, w_cur_loss
 

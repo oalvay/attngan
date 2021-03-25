@@ -54,6 +54,9 @@ def build_super_images(real_imgs, captions, ixtoword,
                        attn_maps, att_sze, lr_imgs=None,
                        batch_size=cfg.TRAIN.BATCH_SIZE,
                        max_word_num=cfg.TEXT.WORDS_NUM):
+    
+    max_word_num = min(cfg.TEXT.WORDS_NUM, 18)
+    
     nvis = 8
     real_imgs = real_imgs[:nvis]
     if lr_imgs is not None:

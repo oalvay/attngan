@@ -9,6 +9,8 @@ from easydict import EasyDict as edict
 __C = edict()
 cfg = __C
 
+__C.CLIP = False
+
 # Dataset name: flowers, birds
 __C.DATASET_NAME = 'birds'
 __C.CONFIG_NAME = ''
@@ -45,6 +47,10 @@ __C.TRAIN.SMOOTH.GAMMA3 = 10.0
 __C.TRAIN.SMOOTH.GAMMA2 = 5.0
 __C.TRAIN.SMOOTH.LAMBDA = 1.0
 
+__C.TRAIN.CLIP_SENTENCODER = False 
+__C.TRAIN.CLIP_LOSS = False
+__C.TRAIN.EXTRA_LOSS = False
+__C.TRAIN.WEIGHT_DAMSM_LOSS = 0.5
 
 # Modal options
 __C.GAN = edict()

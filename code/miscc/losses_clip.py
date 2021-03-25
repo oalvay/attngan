@@ -2,13 +2,18 @@ import torch
 import torch.nn as nn
 
 import numpy as np
+
+import sys
+
 from miscc.config import cfg
 
 from GlobalAttention import func_attention
 
-from clip import tokenize as CLIPtokenize
+#new
+import clip
+from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize, transforms
+from PIL import Image
 
-device = torch.device("cuda:0" if cfg.CUDA else "cpu")
 
 # ##################Loss for matching text-image###################
 def cosine_similarity(x1, x2, dim=1, eps=1e-8):
@@ -52,7 +57,7 @@ def sent_loss(cnn_code, rnn_code, labels, class_ids,
     # --> batch_size x batch_size
     scores0 = scores0.squeeze()
     if class_ids is not None:
-        scores0.data.masked_fill_(masks.to(torch.bool), -float('inf'))
+        scores0.data.masked_fill_(masks, -float('inf'))
     scores1 = scores0.transpose(0, 1)
     if labels is not None:
         loss0 = nn.CrossEntropyLoss()(scores0, labels)
@@ -125,7 +130,7 @@ def words_loss(img_features, words_emb, labels,
 
     similarities = similarities * cfg.TRAIN.SMOOTH.GAMMA3
     if class_ids is not None:
-        similarities.data.masked_fill_(masks.to(torch.bool), -float('inf'))
+        similarities.data.masked_fill_(masks, -float('inf'))
     similarities1 = similarities.transpose(0, 1)
     if labels is not None:
         loss0 = nn.CrossEntropyLoss()(similarities, labels)
@@ -137,96 +142,53 @@ def words_loss(img_features, words_emb, labels,
 
 # ##################Loss for G and Ds##############################
 def discriminator_loss(netD, real_imgs, fake_imgs, conditions,
-                       real_labels, fake_labels, texts):
-    if cfg.CLIP:
-#         texts = CLIPtokenize(texts).to(device)
-#         images = torch.cat([real_imgs, fake_imgs.detach()])
+                       real_labels, fake_labels):
+    # Forward
+    real_features = netD(real_imgs)
+    fake_features = netD(fake_imgs.detach())
+    # loss
+    #
+    cond_real_logits = netD.COND_DNET(real_features, conditions)
+    cond_real_errD = nn.BCELoss()(cond_real_logits, real_labels)
+    cond_fake_logits = netD.COND_DNET(fake_features, conditions)
+    cond_fake_errD = nn.BCELoss()(cond_fake_logits, fake_labels)
+    #
+    batch_size = real_features.size(0)
+    cond_wrong_logits = netD.COND_DNET(real_features[:(batch_size - 1)], conditions[1:batch_size])
+    cond_wrong_errD = nn.BCELoss()(cond_wrong_logits, fake_labels[1:batch_size])
 
-#         real_logits, fake_logits = netD.get_prob(image = images, text = texts)
-        
-#         real_errD = nn.BCELoss()(real_logits, real_labels.type(netD.dtype))
-#         fake_errD = nn.BCELoss()(fake_logits, fake_labels.type(netD.dtype))
-#         #
-#         errD = real_errD + fake_errD
-        
-        real_labels = real_labels.type(netD.dtype)
-        fake_labels = fake_labels.type(netD.dtype)
-    
-        texts = CLIPtokenize(texts).to(device)
-
-        cond_real_logits = netD.get_prob2(real_imgs, texts)
-        cond_real_errD = nn.BCELoss()(cond_real_logits, real_labels)
-        cond_fake_logits = netD.get_prob2(fake_imgs, texts)
-        cond_fake_errD = nn.BCELoss()(cond_fake_logits, fake_labels)
-        
-        
-        batch_size = real_labels.size(0)
-        cond_wrong_logits = netD.get_prob2(real_imgs[:(batch_size - 1)], texts[1:batch_size])
-        cond_wrong_errD = nn.BCELoss()(cond_wrong_logits, fake_labels[1:batch_size])
-        
-        real_logits = netD.get_prob2(real_imgs)
-        fake_logits = netD.get_prob2(fake_imgs)
+    if netD.UNCOND_DNET is not None:
+        real_logits = netD.UNCOND_DNET(real_features)
+        fake_logits = netD.UNCOND_DNET(fake_features)
         real_errD = nn.BCELoss()(real_logits, real_labels)
         fake_errD = nn.BCELoss()(fake_logits, fake_labels)
-        
         errD = ((real_errD + cond_real_errD) / 2. +
                 (fake_errD + cond_fake_errD + cond_wrong_errD) / 3.)
     else:
-        # Forward
-        real_features = netD(real_imgs)
-        fake_features = netD(fake_imgs.detach())
-        # loss
-        #
-        cond_real_logits = netD.COND_DNET(real_features, conditions)
-        cond_real_errD = nn.BCELoss()(cond_real_logits, real_labels)
-        cond_fake_logits = netD.COND_DNET(fake_features, conditions)
-        cond_fake_errD = nn.BCELoss()(cond_fake_logits, fake_labels)
-        #
-        batch_size = real_features.size(0)
-        cond_wrong_logits = netD.COND_DNET(real_features[:(batch_size - 1)], conditions[1:batch_size])
-        cond_wrong_errD = nn.BCELoss()(cond_wrong_logits, fake_labels[1:batch_size])
-
-        if netD.UNCOND_DNET is not None:
-            real_logits = netD.UNCOND_DNET(real_features)
-            fake_logits = netD.UNCOND_DNET(fake_features)
-            real_errD = nn.BCELoss()(real_logits, real_labels)
-            fake_errD = nn.BCELoss()(fake_logits, fake_labels)
-            errD = ((real_errD + cond_real_errD) / 2. +
-                    (fake_errD + cond_fake_errD + cond_wrong_errD) / 3.)
-        else:
-            errD = cond_real_errD + (cond_fake_errD + cond_wrong_errD) / 2.
-    print(real_logits, fake_logits, errD)
+        errD = cond_real_errD + (cond_fake_errD + cond_wrong_errD) / 2.
     return errD
 
 
 def generator_loss(netsD, image_encoder, fake_imgs, real_labels,
                    words_embs, sent_emb, match_labels,
-                   cap_lens, class_ids, texts, real_imgs = None):
+                   cap_lens, class_ids, model, sent_emb_damsm, sent_emb_clip):
     numDs = len(netsD)
     batch_size = real_labels.size(0)
     logs = ''
-    if cfg.CLIP:
-        real_labels = real_labels.type(netsD[0].dtype)
-        texts = CLIPtokenize(texts).to(device)
     # Forward
     errG_total = 0
+
+
     for i in range(numDs):
-        if cfg.CLIP:
-            cond_logits = netsD[i].get_prob2(fake_imgs[-1], texts)
-            cond_errG = nn.BCELoss()(cond_logits, real_labels)
-            logits = netsD[i].get_prob2(fake_imgs[-1])
+        features = netsD[i](fake_imgs[i])
+        cond_logits = netsD[i].COND_DNET(features, sent_emb)
+        cond_errG = nn.BCELoss()(cond_logits, real_labels)
+        if netsD[i].UNCOND_DNET is  not None:
+            logits = netsD[i].UNCOND_DNET(features)
             errG = nn.BCELoss()(logits, real_labels)
             g_loss = errG + cond_errG
         else:
-            features = netsD[i](fake_imgs[i])
-            cond_logits = netsD[i].COND_DNET(features, sent_emb)
-            cond_errG = nn.BCELoss()(cond_logits, real_labels)
-            if netsD[i].UNCOND_DNET is  not None:
-                logits = netsD[i].UNCOND_DNET(features)
-                errG = nn.BCELoss()(logits, real_labels)
-                g_loss = errG + cond_errG
-            else:
-                g_loss = cond_errG
+            g_loss = cond_errG
         errG_total += g_loss
         # err_img = errG_total.data[0]
         logs += 'g_loss%d: %.2f ' % (i, g_loss.item())
@@ -235,19 +197,78 @@ def generator_loss(netsD, image_encoder, fake_imgs, real_labels,
         if i == (numDs - 1):
             # words_features: batch_size x nef x 17 x 17
             # sent_code: batch_size x nef
-            if cfg.CLIP:
-                region_features, cnn_code = image_encoder(fake_imgs[-1])
-            else:
-                region_features, cnn_code = image_encoder(fake_imgs[i])
-            w_loss0, w_loss1, _ = words_loss(region_features, words_embs,
+            # new: rename
+            region_features_damsm, cnn_code_damsm = image_encoder(fake_imgs[i])
+
+            #print("cnn_code before: ", cnn_code[0])
+            #print("fake_imgs[i] shape: ", fake_imgs[i].shape) # torch.Size([10, 3, 256, 256])
+            #print("cnn_code shape: ", cnn_code.shape)  # torch.Size([10, 512])
+            #print("region_features shape: ", region_features.shape)    # torch.Size([10, 512, 17, 17])
+
+            w_loss0, w_loss1, _ = words_loss(region_features_damsm, words_embs,
                                              match_labels, cap_lens,
                                              class_ids, batch_size)
             w_loss = (w_loss0 + w_loss1) * \
-                cfg.TRAIN.SMOOTH.LAMBDA
+                     cfg.TRAIN.SMOOTH.LAMBDA
             # err_words = err_words + w_loss.data[0]
 
-            s_loss0, s_loss1 = sent_loss(cnn_code, sent_emb,
-                                         match_labels, class_ids, batch_size)
+            # new: use CLIP ImageEncoder for global image features (cnn_code)
+            if cfg.TRAIN.CLIP_LOSS:
+                # model = torch.jit.load("model.pt").cuda().eval()
+                input_resolution = model.input_resolution.item()    # 224
+
+                preprocess = Compose([
+                    Resize(input_resolution, interpolation=Image.BICUBIC),
+                    CenterCrop(input_resolution),
+                    ToTensor()
+                ])
+
+                images=[]
+                for j in range(fake_imgs[i].shape[0]):
+                    image = fake_imgs[i][j].cpu().clone()
+                    image = image.squeeze(0)
+                    unloader = transforms.ToPILImage()
+                    image = unloader(image)
+
+                    image = preprocess(image.convert("RGB"))    # 256*256 -> 224*224
+                    images.append(image)
+
+                image_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).cuda()
+                image_std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).cuda()
+
+                image_input = torch.tensor(np.stack(images)).cuda()
+                image_input -= image_mean[:, None, None]
+                image_input /= image_std[:, None, None]
+
+                #print("image_input shape: ", image_input.shape) # torch.Size([10, 3, 224, 224])
+
+                with torch.no_grad():
+                    cnn_code_clip = model.encode_image(image_input).float()
+
+                    #print("cnn_code shape: ", cnn_code.shape)    # torch.Size([10, 512])
+            #print("cnn_code after: ", cnn_code[0])
+
+                # new: add additional damsm sent loss
+                if cfg.TRAIN.EXTRA_LOSS:
+                    weight = cfg.TRAIN.WEIGHT_DAMSM_LOSS
+                    s_loss0_damsm, s_loss1_damsm = sent_loss(cnn_code_damsm, sent_emb_damsm,
+                                     match_labels, class_ids, batch_size)
+                    s_loss0_clip, s_loss1_clip = sent_loss(cnn_code_clip, sent_emb_clip,
+                                     match_labels, class_ids, batch_size)
+                    #print("s_loss0", s_loss0_damsm)
+                    #print("type: ", type(s_loss0_damsm))
+                    s_loss0 = torch.tensor(weight) * s_loss0_damsm + torch.tensor((1 - weight)) * s_loss0_clip
+                    s_loss1 = torch.tensor(weight) * s_loss1_damsm + torch.tensor((1 - weight)) * s_loss1_clip
+                else:
+                    s_loss0, s_loss1 = sent_loss(cnn_code_clip, sent_emb_clip,
+                                               match_labels, class_ids, batch_size)
+            else:
+                if cfg.TRAIN.CLIP_SENTENCODER: # sent_emb_clip
+                    print("SOS, please check code")#"ERROR: Cannot use CLIP text encoder only")
+                    sys.exit()
+                else:
+                    s_loss0, s_loss1 = sent_loss(cnn_code_damsm, sent_emb_damsm,
+                                             match_labels, class_ids, batch_size)
             s_loss = (s_loss0 + s_loss1) * \
                 cfg.TRAIN.SMOOTH.LAMBDA
             # err_sent = err_sent + s_loss.data[0]

@@ -2,6 +2,7 @@ from __future__ import print_function
 
 from miscc.config import cfg, cfg_from_file
 from datasets import TextDataset
+from trainer_clip2 import condGANTrainer as trainer
 
 import os
 import sys
@@ -15,6 +16,8 @@ import numpy as np
 
 import torch
 import torchvision.transforms as transforms
+
+import clip
 
 dir_path = (os.path.abspath(os.path.join(os.path.realpath(__file__), './.')))
 sys.path.append(dir_path)
@@ -87,14 +90,11 @@ if __name__ == "__main__":
     if args.cfg_file is not None:
         cfg_from_file(args.cfg_file)
 
-    if cfg.CLIP:
-        from trainer_clip import condGANTrainer as trainer
-    else:
-        from trainer import condGANTrainer as trainer
     if args.gpu_id != -1:
         cfg.GPU_ID = args.gpu_id
     else:
         cfg.CUDA = False
+    device = torch.device("cuda:0" if cfg.CUDA else "cpu")
 
     if args.data_dir != '':
         cfg.DATA_DIR = args.data_dir
@@ -135,17 +135,28 @@ if __name__ == "__main__":
         dataset, batch_size=cfg.TRAIN.BATCH_SIZE,
         drop_last=True, shuffle=bshuffle, num_workers=int(cfg.WORKERS))
 
+
     # Define models and go to train/evaluate
     algo = trainer(output_dir, dataloader, dataset.n_words, dataset.ixtoword)
 
     start_t = time.time()
+
+    # new: load clip model
+    clip_model = clip.load('ViT-B/32')[0].to(device).eval()  # RN101 # ViT-B/32
+
     if cfg.TRAIN.FLAG:
-        algo.train()
+        # algo.train()
+        # new: pass clip model
+        algo.train(clip_model)
     else:
         '''generate images from pre-extracted embeddings'''
         if cfg.B_VALIDATION:
-            algo.sampling(split_dir)  # generate images for the whole valid dataset
+            print("sampling!")
+            # algo.sampling(split_dir)  # generate images for the whole valid dataset
+            # new: pass clip model
+            algo.sampling(split_dir, clip_model)
         else:
+            # mew: unmodified code, don't use
             gen_example(dataset.wordtoix, algo)  # generate images for customized captions
     end_t = time.time()
     print('Total time for training:', end_t - start_t)

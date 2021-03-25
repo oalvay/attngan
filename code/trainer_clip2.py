@@ -17,16 +17,14 @@ from model import G_DCGAN, G_NET
 from datasets import prepare_data
 from model import RNN_ENCODER, CNN_ENCODER
 
-from miscc.losses import words_loss
-from miscc.losses import discriminator_loss, generator_loss, KL_loss
-import os
+from miscc.losses_clip import words_loss
+from miscc.losses_clip import discriminator_loss, generator_loss, KL_loss
+import os, shutil
 import time
 import numpy as np
 import sys
 
 import clip
-
-import shutil
 
 # ################# Text to image task############################ #
 class condGANTrainer(object):
@@ -219,8 +217,8 @@ class condGANTrainer(object):
                 % (self.image_dir, name, gen_iterations)
             im.save(fullpath)
 
-    def train(self):
-        text_encoder, image_encoder, netG, netsD, start_epoch = self.build_models()
+    def train(self, model):
+        text_encoder, image_encoder, netG, netsD, start_epoch = self.build_models()  #load encoder
         avg_param_G = copy_G_params(netG)
         optimizerG, optimizersD = self.define_optimizers(netG, netsD)
         real_labels, fake_labels, match_labels = self.prepare_labels()
@@ -234,6 +232,17 @@ class condGANTrainer(object):
 
         gen_iterations = 0
         # gen_iterations = start_epoch * self.num_batches
+
+        if cfg.TRAIN.CLIP_SENTENCODER:
+            print("CLIP Sentence Encoder: True")
+
+        if cfg.TRAIN.CLIP_LOSS:
+            print("CLIP Loss: True")
+
+        if cfg.TRAIN.EXTRA_LOSS:
+            print("Extra DAMSM Loss in G: True")
+            print("DAMSM Weight: ", cfg.TRAIN.WEIGHT_DAMSM_LOSS)
+
         for epoch in range(start_epoch, self.max_epoch):
             start_t = time.time()
 
@@ -247,17 +256,55 @@ class condGANTrainer(object):
                 # (1) Prepare training data and Compute text embeddings
                 ######################################################
                 data = data_iter.next()
+
+                # imgs, captions, cap_lens, class_ids, keys = prepare_data(data) #new sents:, sents
+                # new: return raw texts
                 imgs, captions, cap_lens, class_ids, keys, texts = prepare_data(data)
 
                 hidden = text_encoder.init_hidden(batch_size)
                 # words_embs: batch_size x nef x seq_len
                 # sent_emb: batch_size x nef
-                words_embs, sent_emb = text_encoder(captions, cap_lens, hidden)
-                words_embs, sent_emb = words_embs.detach(), sent_emb.detach()
+                # new: rename
+                words_embs_damsm, sent_emb_damsm = text_encoder(captions, cap_lens, hidden)
+                #print('captions shape from trainer: ', captions.shape) torch.Size([12, 18])
+                #print('sentence emb size: ', sent_emb.shape) torch.Size([12, 256])
+                words_embs_damsm, sent_emb_damsm = words_embs_damsm.detach(), sent_emb_damsm.detach()
+                #print('sentence emb size after detach: ', sent_emb[0]) torch.Size([12, 256])
                 mask = (captions == 0)
-                num_words = words_embs.size(2)
+                num_words = words_embs_damsm.size(2)
                 if mask.size(1) > num_words:
                     mask = mask[:, :num_words]
+
+                # new: use clip sentence encoder
+                if cfg.TRAIN.CLIP_SENTENCODER or cfg.TRAIN.CLIP_LOSS:
+                    sents = []
+                    # randomly select one paragraph for each training example
+                    for idx in range(len(texts)):
+                        sents_per_image = texts[idx].split('\n')    #new: '\n' rather than '.'
+                        if len(sents_per_image)>1:
+                            sent_ix = np.random.randint(0, len(sents_per_image)-1)
+                        else:
+                            sent_ix = 0
+                        sents.append(sents_per_image[sent_ix])
+                    #print('sents: ', sents)
+
+                    sent = clip.tokenize(sents)#.to(device)
+
+                    # load clip
+                    #model = torch.jit.load("model.pt").cuda().eval()    # ViT-B/32
+                    sent_input = sent.cuda()
+
+                    with torch.no_grad():
+                        sent_emb_clip = model.encode_text(sent_input).float()
+                        if cfg.TRAIN.CLIP_SENTENCODER:
+                            sent_emb = sent_emb_clip
+                        else:
+                            sent_emb = sent_emb_damsm
+                else:
+                    sent_emb_clip = 0
+                    sent_emb = sent_emb_damsm
+
+                words_embs = words_embs_damsm
 
                 #######################################################
                 # (2) Generate fake images
@@ -273,7 +320,7 @@ class condGANTrainer(object):
                 for i in range(len(netsD)):
                     netsD[i].zero_grad()
                     errD = discriminator_loss(netsD[i], imgs[i], fake_imgs[i],
-                                              sent_emb, real_labels, fake_labels, texts)
+                                              sent_emb, real_labels, fake_labels)
                     # backward and update parameters
                     errD.backward()
                     optimizersD[i].step()
@@ -290,9 +337,12 @@ class condGANTrainer(object):
                 # do not need to compute gradient for Ds
                 # self.set_requires_grad_value(netsD, False)
                 netG.zero_grad()
+                
+                # new: pass clip model and sent_emb_damsm for CLIP_LOSS = True
                 errG_total, G_logs = \
                     generator_loss(netsD, image_encoder, fake_imgs, real_labels,
-                                   words_embs, sent_emb, match_labels, cap_lens, class_ids, texts)
+                                        words_embs, sent_emb, match_labels, cap_lens, class_ids, model, sent_emb_damsm, sent_emb_clip)
+
                 kl_loss = KL_loss(mu, logvar)
                 errG_total += kl_loss
                 G_logs += 'kl_loss: %.2f ' % kl_loss.item()
@@ -300,8 +350,7 @@ class condGANTrainer(object):
                 errG_total.backward()
                 optimizerG.step()
                 for p, avg_p in zip(netG.parameters(), avg_param_G):
-                    # avg_p.mul_(0.999).add_(0.001, p.data)
-                    avg_p.mul_(0.999).add_(p.data, alpha = 0.001)
+                    avg_p.mul_(0.999).add_(0.001, p.data)
 
                 if gen_iterations % 100 == 0:
                     print(D_logs + '\n' + G_logs)
@@ -326,7 +375,7 @@ class condGANTrainer(object):
                      errD_total.item(), errG_total.item(),
                      end_t - start_t))
 
-            if epoch % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:  # and epoch != 0:
+            if epoch % cfg.TRAIN.SNAPSHOT_INTERVAL == 0 or epoch % 10 ==0:  # and epoch != 0:
                 self.save_model(netG, avg_param_G, netsD, epoch)
 
         self.save_model(netG, avg_param_G, netsD, self.max_epoch)
@@ -350,7 +399,7 @@ class condGANTrainer(object):
             im = Image.fromarray(ndarr)
             im.save(fullpath)
 
-    def sampling(self, split_dir):
+    def sampling(self, split_dir, model):
         if cfg.TRAIN.NET_G == '':
             print('Error: the path for morels is not found!')
         else:
@@ -362,7 +411,8 @@ class condGANTrainer(object):
             else:
                 netG = G_NET()
             netG.apply(weights_init)
-            netG.cuda()
+            if cfg.GPU_ID != -1:
+                netG.cuda()
             netG.eval()
             #
             text_encoder = RNN_ENCODER(self.n_words, nhidden=cfg.TEXT.EMBEDDING_DIM)
@@ -370,7 +420,8 @@ class condGANTrainer(object):
                 torch.load(cfg.TRAIN.NET_E, map_location=lambda storage, loc: storage)
             text_encoder.load_state_dict(state_dict)
             print('Load text encoder from:', cfg.TRAIN.NET_E)
-            text_encoder = text_encoder.cuda()
+            if cfg.GPU_ID != -1:
+                text_encoder = text_encoder.cuda()
             text_encoder.eval()
 
             batch_size = self.batch_size
@@ -378,7 +429,8 @@ class condGANTrainer(object):
 
             with torch.no_grad():
                 noise = Variable(torch.FloatTensor(batch_size, nz))
-                noise = noise.cuda()
+                if cfg.GPU_ID != -1:
+                    noise = noise.cuda()
 
             model_dir = cfg.TRAIN.NET_G
             state_dict = \
@@ -394,6 +446,10 @@ class condGANTrainer(object):
 
             cnt = 0
 
+            #new
+            if cfg.TRAIN.CLIP_SENTENCODER:
+                print("Use CLIP SentEncoder for sampling")
+
             for _ in range(1):  # (cfg.TEXT.CAPTIONS_PER_IMAGE):
                 for step, data in enumerate(self.data_loader, 0):
                     cnt += batch_size
@@ -402,17 +458,46 @@ class condGANTrainer(object):
                     # if step > 50:
                     #     break
 
+                    #imgs, captions, cap_lens, class_ids, keys = prepare_data(data)
+                    #new
                     imgs, captions, cap_lens, class_ids, keys, texts = prepare_data(data)
 
                     hidden = text_encoder.init_hidden(batch_size)
                     # words_embs: batch_size x nef x seq_len
                     # sent_emb: batch_size x nef
-                    words_embs, sent_emb = text_encoder(captions, cap_lens, hidden)
+                    words_embs, sent_emb= text_encoder(captions, cap_lens, hidden)
                     words_embs, sent_emb = words_embs.detach(), sent_emb.detach()
                     mask = (captions == 0)
                     num_words = words_embs.size(2)
                     if mask.size(1) > num_words:
                         mask = mask[:, :num_words]
+
+                    # new
+                    if cfg.TRAIN.CLIP_SENTENCODER:
+
+                        # random select one paragraph for each training example
+                        sents = []
+                        for idx in range(len(texts)):
+                            sents_per_image = texts[idx].split('\n') # new 3/11
+                            if len(sents_per_image) > 1:
+                                sent_ix = np.random.randint(0, len(sents_per_image) - 1)
+                            else:
+                                sent_ix = 0
+                            sents.append(sents_per_image[sent_ix])
+                            with open('%s/%s' % (save_dir,'eval_sents.txt'),'a+') as f:
+                                f.write(sents_per_image[sent_ix]+'\n')
+                        # print('sents: ', sents)
+
+                        sent = clip.tokenize(sents)  # .to(device)
+
+                        # load clip
+                        #model = torch.jit.load("model.pt").cuda().eval()
+                        sent_input = sent
+                        if cfg.GPU_ID != -1:
+                            sent_input = sent.cuda()
+                        # print("text input", sent_input)
+                        with torch.no_grad():
+                            sent_emb = model.encode_text(sent_input).float()
 
                     #######################################################
                     # (2) Generate fake images
@@ -439,8 +524,11 @@ class condGANTrainer(object):
                         im = Image.fromarray(im)
                         fullpath = '%s_s%d.png' % (s_tmp, k)
                         im.save(fullpath)
-                        shutil.copy(f"../data/Face/images/{keys[j]}.jpg", f"{save_dir}/real/")
-                        shutil.copy(f"../data/Face/text/{keys[j]}.txt", f"{save_dir}/text/")
+                        temp = keys[j].replace('b','').replace("'",'')
+                        shutil.copy(f"../data/Face/images/{temp}.jpg", f"{save_dir}/real/")
+                        shutil.copy(f"../data/Face/text/{temp}.txt", f"{save_dir}/text/")
+
+    ''' # new: disable due to unmodified
     def gen_example(self, data_dic):
         if cfg.TRAIN.NET_G == '':
             print('Error: the path for morels is not found!')
@@ -531,3 +619,4 @@ class condGANTrainer(object):
                                 im = Image.fromarray(img_set)
                                 fullpath = '%s_a%d.png' % (save_name, k)
                                 im.save(fullpath)
+    '''

@@ -5,7 +5,6 @@ DATA_DIR: '../data/Face' #'../data/CelebA'
 GPU_ID: 0
 WORKERS: 4 #16
 
-CLIP: False
 
 TREE:
     BRANCH_NUM: 3
@@ -13,14 +12,19 @@ TREE:
 
 TRAIN:
     FLAG: True
-    NET_G: '' #'../models/38word_original/netG_epoch_100.pth'
+    NET_G: '../output/Face_attn2_2021_03_22_10_06_42/Model/netG_epoch_420.pth'
     B_NET_D: True
     BATCH_SIZE: 8 #12  # 20  22
-    MAX_EPOCH: 601  # 600
+    MAX_EPOCH: 600  # 600
     SNAPSHOT_INTERVAL: 50
     DISCRIMINATOR_LR: 0.0002
     GENERATOR_LR: 0.0002
-    #
+    # new
+    CLIP_SENTENCODER: True
+    CLIP_LOSS: True
+    EXTRA_LOSS: True
+    WEIGHT_DAMSM_LOSS: 1.0
+
     NET_E: '../DAMSMencoders/Face/text_encoder25_512.pth'
     SMOOTH:
         GAMMA1: 4.0  # 1,2,5 good 4 best  10&100bad
