@@ -8,3 +8,9 @@ code/*.pyc
 code/miscc/*.pyc
 .DS_Store
 .idea/
+
+code/main.py
+code/trainer.py
+code/trainer_clip.py
+code/miscc/losses.py
+code/cfg/face_clip.yml
