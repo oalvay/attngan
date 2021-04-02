@@ -22,7 +22,7 @@ from miscc.losses_clip import discriminator_loss, generator_loss, KL_loss
 import os, shutil
 import time
 import numpy as np
-import sys
+import sys, pickle
 
 import clip
 
@@ -528,6 +528,145 @@ class condGANTrainer(object):
                         shutil.copy(f"../data/Face/images/{temp}.jpg", f"{save_dir}/real/")
                         shutil.copy(f"../data/Face/text/{temp}.txt", f"{save_dir}/text/")
 
+    def embedding(self, split_dir, model):
+        if cfg.TRAIN.NET_G == '':
+            print('Error: the path for morels is not found!')
+        else:
+            if split_dir == 'test':
+                split_dir = 'valid'
+            # Build and load the generator
+            if cfg.GAN.B_DCGAN:
+                netG = G_DCGAN()
+            else:
+                netG = G_NET()
+            netG.apply(weights_init)
+            if cfg.GPU_ID != -1:
+                netG.cuda()
+            netG.eval()
+            #
+            model_dir = cfg.TRAIN.NET_G
+            state_dict = \
+                torch.load(model_dir, map_location=lambda storage, loc: storage)
+            netG.load_state_dict(state_dict)
+            print('Load G from: ', model_dir)
+            
+            image_encoder = CNN_ENCODER(cfg.TEXT.EMBEDDING_DIM)
+            img_encoder_path = cfg.TRAIN.NET_E.replace('text_encoder', 'image_encoder')
+            print(img_encoder_path)
+            print('Load image encoder from:', img_encoder_path)
+            state_dict = \
+                torch.load(img_encoder_path, map_location=lambda storage, loc: storage)
+            image_encoder.load_state_dict(state_dict)
+            if cfg.GPU_ID != -1:
+                image_encoder = image_encoder.cuda()
+            image_encoder.eval()
+            
+            print('Load text encoder from:', cfg.TRAIN.NET_E)
+            text_encoder = RNN_ENCODER(self.n_words, nhidden=cfg.TEXT.EMBEDDING_DIM)
+            state_dict = \
+                torch.load(cfg.TRAIN.NET_E, map_location=lambda storage, loc: storage)
+            text_encoder.load_state_dict(state_dict)
+            if cfg.GPU_ID != -1:
+                text_encoder = text_encoder.cuda()
+            text_encoder.eval()
+        
+            batch_size = self.batch_size
+            nz = cfg.GAN.Z_DIM
+
+            with torch.no_grad():
+                noise = Variable(torch.FloatTensor(batch_size, nz))
+                if cfg.GPU_ID != -1:
+                    noise = noise.cuda()
+
+            # the path to save generated images
+            save_dir = model_dir[:model_dir.rfind('.pth')]
+
+            cnt = 0
+
+            # new
+            if cfg.TRAIN.CLIP_SENTENCODER:
+                print("Use CLIP SentEncoder for sampling")
+            img_features = dict()
+            txt_features = dict()
+
+            with torch.no_grad():
+                for _ in range(1):  # (cfg.TEXT.CAPTIONS_PER_IMAGE):
+                    for step, data in enumerate(self.data_loader, 0):
+                        cnt += batch_size
+                        if step % 100 == 0:
+                            print('step: ', step)
+
+                        imgs, captions, cap_lens, class_ids, keys, texts = prepare_data(data)
+
+                        hidden = text_encoder.init_hidden(batch_size)
+                        # words_embs: batch_size x nef x seq_len
+                        # sent_emb: batch_size x nef
+                        words_embs, sent_emb = text_encoder(captions, cap_lens, hidden)
+                        words_embs, sent_emb = words_embs.detach(), sent_emb.detach()
+                        mask = (captions == 0)
+                        num_words = words_embs.size(2)
+                        if mask.size(1) > num_words:
+                            mask = mask[:, :num_words]
+
+                        if cfg.TRAIN.CLIP_SENTENCODER:
+
+                            # random select one paragraph for each training example
+                            sents = []
+                            for idx in range(len(texts)):
+                                sents_per_image = texts[idx].split('\n') # new 3/11
+                                if len(sents_per_image) > 1:
+                                    sent_ix = np.random.randint(0, len(sents_per_image) - 1)
+                                else:
+                                    sent_ix = 0
+                                sents.append(sents_per_image[0])
+                            # print('sents: ', sents)
+
+                            sent = clip.tokenize(sents)  # .to(device)
+
+                            # load clip
+                            #model = torch.jit.load("model.pt").cuda().eval()
+                            sent_input = sent
+                            if cfg.GPU_ID != -1:
+                                sent_input = sent.cuda()
+                            # print("text input", sent_input)
+                            sent_emb_clip = model.encode_text(sent_input).float()
+                            if CLIP:
+                                sent_emb = sent_emb_clip
+                        #######################################################
+                        # (2) Generate fake images
+                        ######################################################
+                        noise.data.normal_(0, 1)
+                        fake_imgs, _, _, _ = netG(noise, sent_emb, words_embs, mask)
+                        if CLIP:
+                            images=[]
+                            for j in range(fake_imgs[-1].shape[0]):
+                                image = fake_imgs[-1][j].cpu().clone()
+                                image = image.squeeze(0)
+                                unloader = transforms.ToPILImage()
+                                image = unloader(image)
+
+                                image = preprocess(image.convert("RGB"))    # 256*256 -> 224*224
+                                images.append(image)
+
+                            image_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).cuda()
+                            image_std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).cuda()
+
+                            image_input = torch.tensor(np.stack(images)).cuda()
+                            image_input -= image_mean[:, None, None]
+                            image_input /= image_std[:, None, None]
+                            cnn_codes = model.encode_image(image_input).float()
+                        else:
+                            region_features, cnn_codes = image_encoder(fake_imgs[-1])
+                        for j in range(batch_size):
+                            cnn_code = cnn_codes[j]
+
+                            temp = keys[j].replace('b','').replace("'",'')
+                            img_features[temp] = cnn_code.cpu().numpy()
+                            txt_features[temp] = sent_emb[j].cpu().numpy()
+            with open(save_dir+".pkl", 'wb') as f:
+                pickle.dump(img_features, f)
+            with open(save_dir+"_text.pkl", 'wb') as f:
+                pickle.dump(txt_features, f)
     ''' # new: disable due to unmodified
     def gen_example(self, data_dic):
         if cfg.TRAIN.NET_G == '':

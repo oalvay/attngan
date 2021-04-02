@@ -177,7 +177,7 @@ class CNN_ENCODER(nn.Module):
         if cfg.TRAIN.FLAG:
             self.nef = nef
         else:
-            self.nef = 256  # define a uniform ranker
+            self.nef = 512  # define a uniform ranker
 
         model = models.inception_v3()
         url = 'https://download.pytorch.org/models/inception_v3_google-1a9a5a14.pth'

@@ -12,7 +12,7 @@ TREE:
 
 TRAIN:
     FLAG: True
-    NET_G: '../output/Face_attn2_2021_03_23_20_06_09/Model/netG_epoch_80.pth'
+    NET_G: '../output/Face_attn2_2021_03_24_09_05_09/Model/netG_epoch_400.pth'
     B_NET_D: True
     BATCH_SIZE: 8 #12  # 20  22
     MAX_EPOCH: 600  # 600

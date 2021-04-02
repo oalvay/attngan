@@ -101,10 +101,11 @@ if __name__ == "__main__":
     print('Using config:')
     pprint.pprint(cfg)
 
-    if not cfg.TRAIN.FLAG:
+    if not cfg.TRAIN.FLAG and args.manualSeed is None:
         args.manualSeed = 100
     elif args.manualSeed is None:
         args.manualSeed = random.randint(1, 10000)
+    print(args.manualSeed)
     random.seed(args.manualSeed)
     np.random.seed(args.manualSeed)
     torch.manual_seed(args.manualSeed)
@@ -156,7 +157,7 @@ if __name__ == "__main__":
             # new: pass clip model
             algo.sampling(split_dir, clip_model)
         else:
-            # mew: unmodified code, don't use
-            gen_example(dataset.wordtoix, algo)  # generate images for customized captions
+            print("embedding!")
+            algo.embedding(split_dir, clip_model)
     end_t = time.time()
-    print('Total time for training:', end_t - start_t)
+    print('Total time used:', end_t - start_t)

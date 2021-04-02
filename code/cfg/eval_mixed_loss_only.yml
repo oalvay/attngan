@@ -12,11 +12,11 @@ TREE:
 
 TRAIN:
     FLAG: False
-    NET_G: '../output/Face_attn2_2021_03_24_09_05_09/Model/netG_epoch_380.pth'
+    NET_G: '../output/oalvay/Model/mixed_loss_only.pth'
     B_NET_D: False
     BATCH_SIZE: 8
     NET_E: '../DAMSMencoders/Face/text_encoder25_512.pth'
-    CLIP_SENTENCODER: True
+    CLIP_SENTENCODER: False
 
 
 GAN:

@@ -12,10 +12,10 @@ TREE:
 
 TRAIN:
     FLAG: True
-    NET_G: ''
+    NET_G: '../output/mixed_loss_only/Model/netG_epoch_200.pth'
     B_NET_D: True
     BATCH_SIZE: 8 #12  # 20  22
-    MAX_EPOCH: 600  # 600
+    MAX_EPOCH: 204  # 600
     SNAPSHOT_INTERVAL: 50
     DISCRIMINATOR_LR: 0.0002
     GENERATOR_LR: 0.0002

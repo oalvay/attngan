@@ -21,4 +21,9 @@ damsm:
 eval:
 	. ~/miniconda3/etc/profile.d/conda.sh
 	conda activate clip
-	python $(name).py --cfg cfg/eval_face.yml
+	python main_clip.py --cfg cfg/eval_replace_loss_text.yml --gpu 0 --manualSeed $(seed)
+	python main_clip.py --cfg cfg/eval_replace_text_only.yml --gpu 0 --manualSeed $(seed)
+	python main_clip.py --cfg cfg/eval_replace_loss_only.yml --gpu 0 --manualSeed $(seed)
+	python main_clip.py --cfg cfg/eval_mixed_loss_only.yml --gpu 0 --manualSeed $(seed)
+	python main_clip.py --cfg cfg/eval_mixed_loss_text.yml --gpu 0 --manualSeed $(seed)
+	python main_clip.py --cfg cfg/eval_original.yml --gpu 0 --manualSeed $(seed)

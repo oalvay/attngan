@@ -1,0 +1,31 @@
+CONFIG_NAME: 'attn2'
+
+DATASET_NAME: 'Face'
+DATA_DIR: '../data/Face'
+GPU_ID: -1
+WORKERS: 4
+
+B_VALIDATION: False
+TREE:
+    BRANCH_NUM: 3
+
+
+TRAIN:
+    FLAG: False
+    NET_G: '../output/oalvay/Model/original.pth'
+    B_NET_D: False
+    BATCH_SIZE: 8
+    NET_E: '../DAMSMencoders/Face/text_encoder25_512.pth'
+    CLIP_SENTENCODER: False
+
+
+GAN:
+    DF_DIM: 64
+    GF_DIM: 32
+    Z_DIM: 100
+    R_NUM: 2
+
+TEXT:
+    EMBEDDING_DIM: 512
+    CAPTIONS_PER_IMAGE: 1
+    WORDS_NUM: 36
